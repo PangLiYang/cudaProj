@@ -69,7 +69,7 @@ __global__ void forwardKernel(const int *_warp4, const int *idx, const float *va
     int warpRow, warpLoc, warpLen;
     int sparse_warpRow, sparse_warpLoc, sparse_warpLen;
 
-    if (tId < num_warps) {
+    if (warpId < num_warps) {
         wInfo = warp4[warpId];
         warpRow = wInfo.x;
         warpLoc = wInfo.y;
@@ -98,19 +98,44 @@ __global__ void forwardKernel(const int *_warp4, const int *idx, const float *va
 
         if (sparse_wid < blockDim.x / EXT_WARP_DIM && laneId / dim_sparse < EXT_WARP_DIM / dim_sparse) {
 
+            for (int i = 0; i < sparse_warpLen; i += 1) {
+                int nzLoc = sparse_warpLoc + i;
+
+                float leftV = __ldg(val + nzLoc);
+                int rightLoc = __ldg(val + nzLoc); * DIM_MUL(dim_sparse) + sparse_laneId;
+                float rightV = vin_data[rightLoc];
+
+                out_cache[sparse_wid * feat_in + vin_selector[rightLoc]] += leftV * rightV;
+            }
+
         }
 
+        __syncthreads();
+
+    } else {
+
+        for (int i = 0; i < warpLen; i += 1) {
+
+            for (int j = laneId; j < dim_sparse; j += 1) {
+
+                int nzLoc = warpLoc + i;
+
+                float leftV = __ldg(val + nzLoc);
+                int rightLoc = __ldg(val + nzLoc); * DIM_MUL(dim_sparse) + sparse_laneId;
+                float rightV = vin_data[rightLoc];
+
+                out_cache[wId * feat_in + vin_selector[rightLoc]] += leftV * rightV;
+            }
+
+        }
+
+        __syncthreads();
     }
 
+    #pragma unroll
+    for (int ext = 0; ext < (feat_in + EXT_WARP_DIM - 1) / EXT_WARP_DIM; ext += 1) {
 
-
-
-
-
-
-
-
-
-
+        atomicAdd(&vout[warpRow * feat_in + laneId + ext * EXT_WARP_DIM], out_cache[wId * feat_in + laneId + ext * EXT_WARP_DIM]);
+    }
 
 }
